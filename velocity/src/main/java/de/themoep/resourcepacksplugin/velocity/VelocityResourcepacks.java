@@ -1,8 +1,8 @@
-package de.themoep.resourcepacksplugin.bungee;
+package de.themoep.resourcepacksplugin.velocity;
 
 /*
- * ResourcepacksPlugins - bungee
- * Copyright (C) 2018 Max Lee aka Phoenix616 (mail@moep.tv)
+ * ResourcepacksPlugins - velocity
+ * Copyright (C) 2020 Max Lee aka Phoenix616 (mail@moep.tv)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,15 +20,25 @@ package de.themoep.resourcepacksplugin.bungee;
 
 import com.google.common.io.ByteArrayDataOutput;
 import com.google.common.io.ByteStreams;
-import de.themoep.bungeeplugin.FileConfiguration;
-import de.themoep.minedown.MineDown;
-import de.themoep.resourcepacksplugin.bungee.events.ResourcePackSelectEvent;
-import de.themoep.resourcepacksplugin.bungee.events.ResourcePackSendEvent;
-import de.themoep.resourcepacksplugin.bungee.listeners.PluginMessageListener;
-import de.themoep.resourcepacksplugin.bungee.listeners.DisconnectListener;
-import de.themoep.resourcepacksplugin.bungee.listeners.ServerSwitchListener;
-import de.themoep.resourcepacksplugin.bungee.packets.IdMapping;
-import de.themoep.resourcepacksplugin.bungee.packets.ResourcePackSendPacket;
+import com.google.inject.Inject;
+import com.typesafe.config.Config;
+import com.typesafe.config.ConfigValue;
+import com.typesafe.config.ConfigValueFactory;
+import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.network.ProtocolVersion;
+import com.velocitypowered.api.plugin.Plugin;
+import com.velocitypowered.api.plugin.PluginContainer;
+import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
+import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
+import de.themoep.minedown.adventure.MineDown;
+import de.themoep.resourcepacksplugin.velocity.events.ResourcePackSelectEvent;
+import de.themoep.resourcepacksplugin.velocity.events.ResourcePackSendEvent;
+import de.themoep.resourcepacksplugin.velocity.listeners.PluginMessageListener;
+import de.themoep.resourcepacksplugin.velocity.listeners.DisconnectListener;
+import de.themoep.resourcepacksplugin.velocity.listeners.ServerSwitchListener;
 import de.themoep.resourcepacksplugin.core.PackAssignment;
 import de.themoep.resourcepacksplugin.core.PackManager;
 import de.themoep.resourcepacksplugin.core.ResourcePack;
@@ -42,53 +52,39 @@ import de.themoep.resourcepacksplugin.core.commands.UsePackCommandExecutor;
 import de.themoep.resourcepacksplugin.core.events.IResourcePackSelectEvent;
 import de.themoep.resourcepacksplugin.core.events.IResourcePackSendEvent;
 import de.themoep.utils.lang.LanguageConfig;
-import de.themoep.utils.lang.bungee.LanguageManager;
-import net.md_5.bungee.api.ChatColor;
-import net.md_5.bungee.api.chat.BaseComponent;
-import net.md_5.bungee.api.chat.TextComponent;
-import net.md_5.bungee.api.connection.ProxiedPlayer;
-import net.md_5.bungee.api.plugin.Plugin;
-import net.md_5.bungee.config.Configuration;
-import net.md_5.bungee.protocol.BadPacketException;
-import net.md_5.bungee.protocol.DefinedPacket;
-import net.md_5.bungee.protocol.Protocol;
-import net.md_5.bungee.protocol.ProtocolConstants;
-import net.minecrell.mcstats.BungeeStatsLite;
-import org.bstats.MetricsLite;
+import de.themoep.utils.lang.velocity.LanguageManager;
+import de.themoep.utils.lang.velocity.Languaged;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.TextComponent;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainComponentSerializer;
 import us.myles.ViaVersion.api.ViaAPI;
 import us.myles.ViaVersion.api.platform.ViaPlatform;
 
 import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.Array;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
-/**
- * Created by Phoenix616 on 18.03.2015.
- */
-public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
+@Plugin(id = "velocityresourcepacks", name = "VelocityResourcepacks", version = "'${minecraft.plugin.version}'", authors = {"Phoenix616"})
+public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
 
-    private static BungeeResourcepacks instance;
-    
-    private FileConfiguration config;
+    private static VelocityResourcepacks instance;
+    private final ProxyServer proxy;
+    private final Logger logger;
 
-    private FileConfiguration storedPacks;
+    private static final ChannelIdentifier PLUGIN_MESSAGE_CHANNEL = MinecraftChannelIdentifier.create("rp", "plugin");
+
+    private PluginConfig config;
+
+    private PluginConfig storedPacks;
     
     private PackManager pm = new PackManager(this);
 
@@ -120,17 +116,18 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
 
     private ViaAPI viaApi;
 
-    public void onEnable() {
+    @Inject
+    public VelocityResourcepacks(ProxyServer proxy, Logger logger) {
         instance = this;
+        this.proxy = proxy;
+        this.logger = logger;
+    }
 
+    @Subscribe
+    public void onProxyInitialization(ProxyInitializeEvent event) {
         boolean firstStart = !getDataFolder().exists();
 
         if (!loadConfig()) {
-            return;
-        }
-
-        if (!registerPacket(Protocol.GAME, "TO_CLIENT", ResourcePackSendPacket.class)) {
-            getLogger().log(Level.SEVERE, "Disabling the plugin as it can't work without the ResourcePackSendPacket!");
             return;
         }
 
@@ -140,9 +137,9 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         registerCommand(new UsePackCommandExecutor(this));
         registerCommand(new ResetPackCommandExecutor(this));
 
-        ViaPlatform viaPlugin = (ViaPlatform) getProxy().getPluginManager().getPlugin("ViaVersion");
-        if (viaPlugin != null) {
-            viaApi = viaPlugin.getApi();
+        Optional<PluginContainer> viaPlugin = getProxy().getPluginManager().getPlugin("ViaVersion");
+        if (viaPlugin.isPresent()) {
+            viaApi = ((ViaPlatform) viaPlugin.get()).getApi();
             getLogger().log(Level.INFO, "Detected ViaVersion " + viaApi.getVersion());
         }
 
@@ -152,14 +149,13 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
 
         um = new UserManager(this);
 
-        getProxy().getPluginManager().registerListener(this, new DisconnectListener(this));
-        getProxy().getPluginManager().registerListener(this, new ServerSwitchListener(this));
-        getProxy().getPluginManager().registerListener(this, new PluginMessageListener(this));
-        getProxy().registerChannel("rp:plugin");
+        getProxy().getEventManager().register(this, new DisconnectListener(this));
+        getProxy().getEventManager().register(this, new ServerSwitchListener(this));
+        getProxy().getEventManager().register(this, new PluginMessageListener(this));
+        getProxy().getChannelRegistrar().register(MinecraftChannelIdentifier.create("rp", "plugin"));
 
         if (!getConfig().getBoolean("disable-metrics", false)) {
-            new BungeeStatsLite(this).start();
-            new MetricsLite(this);
+            // TODO: Metrics?
         }
 
         if (firstStart || new Random().nextDouble() < 0.01) {
@@ -167,152 +163,25 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         }
     }
 
-    protected boolean registerPacket(Protocol protocol, String directionName, Class<? extends DefinedPacket> packetClass) {
-        try {
-            Field directionField;
-            try {
-                directionField = Protocol.class.getField(directionName);
-            } catch (NoSuchFieldException e) {
-                directionField = Protocol.class.getDeclaredField(directionName);
-                directionField.setAccessible(true);
-            }
-            Object direction = directionField.get(protocol);
-            List<Integer> supportedVersions = new ArrayList<>();
-            try {
-                Field svField = Protocol.class.getField("supportedVersions");
-                supportedVersions = (List<Integer>) svField.get(null);
-            } catch(Exception e1) {
-                // Old bungee protocol version, try new one
-            }
-            if (supportedVersions.size() == 0) {
-                Field svIdField = ProtocolConstants.class.getField("SUPPORTED_VERSION_IDS");
-                supportedVersions = (List<Integer>) svIdField.get(null);
-            }
-
-            Field field = packetClass.getField("ID_MAPPINGS");
-            if (field == null) {
-                getLogger().log(Level.SEVERE, packetClass.getSimpleName() + " does not contain ID_MAPPINGS field!");
-                return false;
-            }
-            List<IdMapping> idMappings = (List<IdMapping>) field.get(null);
-
-            logDebug("Registering " + packetClass.getSimpleName() + "...");
-            bungeeVersion = supportedVersions.get(supportedVersions.size() - 1);
-            if (bungeeVersion == ProtocolConstants.MINECRAFT_1_8) {
-                logDebug("BungeeCord 1.8 (" + bungeeVersion + ") detected!");
-                Method reg = direction.getClass().getDeclaredMethod("registerPacket", int.class, Class.class);
-                reg.setAccessible(true);
-                int id = -1;
-                for (IdMapping mapping : idMappings) {
-                    if (mapping.getProtocolVersion() == ProtocolConstants.MINECRAFT_1_8) {
-                        id = mapping.getPacketId();
-                        break;
-                    }
-                }
-                if (id == -1) {
-                    getLogger().log(Level.SEVERE, packetClass.getSimpleName() + " does not contain an ID for 1.8!");
-                    return false;
-                }
-                reg.invoke(direction, id, packetClass);
-            } else if (bungeeVersion >= ProtocolConstants.MINECRAFT_1_9 && bungeeVersion < ProtocolConstants.MINECRAFT_1_9_4) {
-                logDebug("BungeeCord 1.9-1.9.3 (" + bungeeVersion + ") detected!");
-                Method reg = direction.getClass().getDeclaredMethod("registerPacket", int.class, int.class, Class.class);
-                reg.setAccessible(true);
-                int id18 = -1;
-                int id19 = -1;
-                for (IdMapping mapping : idMappings) {
-                    if (mapping.getProtocolVersion() == ProtocolConstants.MINECRAFT_1_8) {
-                        id18 = mapping.getPacketId();
-                    } else if (mapping.getProtocolVersion() >= ProtocolConstants.MINECRAFT_1_9 && mapping.getProtocolVersion() < ProtocolConstants.MINECRAFT_1_9_4) {
-                        id19 = mapping.getPacketId();
-                    }
-                }
-                if (id18 == -1 || id19 == -1) {
-                    getLogger().log(Level.SEVERE, packetClass.getSimpleName() + " does not contain an ID for 1.8 or 1.9!");
-                    return false;
-                }
-                reg.invoke(direction, id18, id19, packetClass);
-            } else if (bungeeVersion >= ProtocolConstants.MINECRAFT_1_9_4) {
-                logDebug("BungeeCord 1.9.4+ (" + bungeeVersion + ") detected!");
-                Method map = Protocol.class.getDeclaredMethod("map", int.class, int.class);
-                map.setAccessible(true);
-                Map<String, Object> mappings = new LinkedHashMap<>();
-
-                ArrayDeque<IdMapping> additionalMappings = new ArrayDeque<>();
-                Set<Integer> registeredVersions = new HashSet<>();
-                for (IdMapping mapping : idMappings) {
-                    if (ProtocolConstants.SUPPORTED_VERSION_IDS.contains(mapping.getProtocolVersion())) {
-                        mappings.put(mapping.getName(), map.invoke(null, mapping.getProtocolVersion(), mapping.getPacketId()));
-                        registeredVersions.add(mapping.getProtocolVersion());
-                    } else {
-                        additionalMappings.addFirst(mapping);
-                    }
-                }
-
-                // Check if we have a supported version after the additional mapping's id
-                // This allows specifying the snapshot version an ID was first used
-                for (IdMapping mapping : additionalMappings) {
-                    for (int id : ProtocolConstants.SUPPORTED_VERSION_IDS) {
-                        if (!registeredVersions.contains(id) && id > mapping.getProtocolVersion()) {
-                            logDebug("Using unregistered mapping " + mapping.getName() + "/" + mapping.getProtocolVersion() + " for unregistered version " + id);
-                            mappings.put(mapping.getName(), map.invoke(null, id, mapping.getPacketId()));
-                            registeredVersions.add(id);
-                            break;
-                        }
-                    }
-                }
-
-                Object mappingsObject = Array.newInstance(mappings.values().iterator().next().getClass(), mappings.size());
-                int i = 0;
-                for (Iterator<Map.Entry<String, Object>> it = mappings.entrySet().iterator(); it.hasNext() ; i++) {
-                    Map.Entry<String, Object> entry = it.next();
-                    Array.set(mappingsObject, i, entry.getValue());
-                    logDebug("Found mapping for " + entry.getKey() + "+");
-                }
-                Object[] mappingsArray = (Object[]) mappingsObject;
-                Method reg = direction.getClass().getDeclaredMethod("registerPacket", Class.class, mappingsArray.getClass());
-                reg.setAccessible(true);
-                try {
-                    reg.invoke(direction, packetClass, mappingsArray);
-                } catch (Throwable t) {
-                    getLogger().log(Level.SEVERE, "Protocol version " + bungeeVersion + " is not supported! Please look for an update!", t);
-                    return false;
-                }
-            } else {
-                getLogger().log(Level.SEVERE, "Unsupported BungeeCord version (" + bungeeVersion + ") found! You need at least 1.8 for this plugin to work!");
-                return false;
-            }
-            return true;
-        } catch (IllegalAccessException | InvocationTargetException e) {
-            e.printStackTrace();
-        } catch (NoSuchMethodException e) {
-            getLogger().log(Level.SEVERE, "Couldn't find a required method! Please update this plugin or downgrade BungeeCord!", e);
-        } catch (NoSuchFieldException e) {
-            getLogger().log(Level.SEVERE, "Couldn't find a required field! Please update this plugin or downgrade BungeeCord!", e);
-        }
-        return false;
-    }
-
     protected void registerCommand(PluginCommandExecutor executor) {
-        getProxy().getPluginManager().registerCommand(this, new ForwardingCommand(executor));
+        getProxy().getCommandManager().register(
+                getProxy().getCommandManager().metaBuilder(executor.getName()).aliases(executor.getAliases()).build(),
+                new ForwardingCommand(executor)
+        );
     }
 
     public boolean loadConfig() {
-        try {
-            config = new FileConfiguration(this, new File(getDataFolder(), "config.yml"), "bungee-config.yml");
-            getLogger().log(Level.INFO, "Loading config!");
-        } catch (IOException e) {
-            getLogger().log(Level.SEVERE, "Unable to load configuration! " + getDescription().getName() + " will not be enabled!", e);
+        config = new PluginConfig(this, new File(getDataFolder(), "config.conf"), "velocity-config.conf");
+        if (!config.load()) {
             return false;
         }
 
-        try {
-            storedPacks = new FileConfiguration(this, new File(getDataFolder(), "players.yml"));
-        } catch (IOException e) {
-            getLogger().log(Level.SEVERE, "Unable to load players.yml! Stored player packs will not work!", e);
+        storedPacks = new PluginConfig(this, new File(getDataFolder(), "players.conf"));
+        if (!storedPacks.load()) {
+            getLogger().log(Level.SEVERE, "Unable to load players.yml! Stored player packs will not apply!");
         }
 
-        String debugString = getConfig().getString("debug");
+        String debugString = getConfig().getString("debug", "true");
         if (debugString.equalsIgnoreCase("true")) {
             loglevel = Level.INFO;
         } else if (debugString.equalsIgnoreCase("false") || debugString.equalsIgnoreCase("off")) {
@@ -326,20 +195,20 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         }
         getLogger().log(Level.INFO, "Debug level: " + getLogLevel().getName());
 
-        if(getConfig().getBoolean("useauth", false)) {
+        if (getConfig().getBoolean("useauth")) {
             getLogger().log(Level.INFO, "Compatibility with backend AuthMe install ('useauth') is enabled.");
         }
 
         lm = new LanguageManager(this, getConfig().getString("default-language"));
 
         getPackManager().init();
-        if (getConfig().isSet("packs", true) && getConfig().isSection("packs")) {
+        if (getConfig().isSection("packs")) {
             getLogger().log(Level.INFO, "Loading packs:");
-            Configuration packs = getConfig().getSection("packs");
-            for (String s : packs.getKeys()) {
-                Configuration packSection = packs.getSection(s);
+            Config packs = getConfig().getRawConfig("packs");
+            for (Map.Entry<String, ConfigValue> s : packs.entrySet()) {
+                Config packSection = packs.getConfig(s.getKey());
                 try {
-                    ResourcePack pack = getPackManager().loadPack(s, getConfigMap(packSection));
+                    ResourcePack pack = getPackManager().loadPack(s.getKey(), getConfigMap(packSection));
                     getLogger().log(Level.INFO, pack.getName() + " - " + (pack.getVariants().isEmpty() ? (pack.getUrl() + " - " + pack.getHash()) : pack.getVariants().size() + " variants"));
 
                     ResourcePack previous = getPackManager().addPack(pack);
@@ -356,7 +225,7 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         }
 
         if (getConfig().isSection("empty")) {
-            Configuration packSection = getConfig().getSection("empty");
+            Config packSection = getConfig().getRawConfig("empty");
             try {
                 ResourcePack pack = getPackManager().loadPack(PackManager.EMPTY_IDENTIFIER, getConfigMap(packSection));
                 getLogger().log(Level.INFO, "Empty pack - " + (pack.getVariants().isEmpty() ? (pack.getUrl() + " - " + pack.getHash()) : pack.getVariants().size() + " variants"));
@@ -381,9 +250,9 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
             }
         }
 
-        if (getConfig().isSet("global", true) && getConfig().isSection("global")) {
+        if (getConfig().isSection("global")) {
             getLogger().log(Level.INFO, "Loading global assignment...");
-            Configuration globalSection = getConfig().getSection("global");
+            Config globalSection = getConfig().getRawConfig("global");
             PackAssignment globalAssignment = getPackManager().loadAssignment("global", getValues(globalSection));
             getPackManager().setGlobalAssignment(globalAssignment);
             logDebug("Loaded " + globalAssignment.toString());
@@ -391,14 +260,14 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
             logDebug("No global assignment defined!");
         }
 
-        if (getConfig().isSet("servers", true) && getConfig().isSection("servers")) {
+        if (getConfig().isSection("servers")) {
             getLogger().log(Level.INFO, "Loading server assignments...");
-            Configuration servers = getConfig().getSection("servers");
-            for (String server : servers.getKeys()) {
-                Configuration serverSection = servers.getSection(server);
-                if (!serverSection.getKeys().isEmpty()) {
+            Config servers = getConfig().getRawConfig("servers");
+            for (Map.Entry<String, ConfigValue> server : servers.entrySet()) {
+                Config serverSection = servers.getConfig(server.getKey());
+                if (!serverSection.entrySet().isEmpty()) {
                     getLogger().log(Level.INFO, "Loading assignment for server " + server + "...");
-                    PackAssignment serverAssignment = getPackManager().loadAssignment(server, getValues(serverSection));
+                    PackAssignment serverAssignment = getPackManager().loadAssignment(server.getKey(), getValues(serverSection));
                     getPackManager().addAssignment(serverAssignment);
                     logDebug("Loaded server assignment " + serverAssignment.toString());
                 } else {
@@ -418,23 +287,14 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
     public Map<String, Object> getConfigMap(Object configuration) {
         if (configuration instanceof Map) {
             return (Map<String, Object>) configuration;
-        } else if (configuration instanceof Configuration) {
-            return getValues((Configuration) configuration);
+        } else if (configuration instanceof Config) {
+            return getValues((Config) configuration);
         }
         return null;
     }
 
-    private Map<String, Object> getValues(Configuration config) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        for (String key : config.getKeys()) {
-            Object value = config.get(key);
-            if (value instanceof Configuration) {
-                map.put(key, getValues((Configuration) value));
-            } else {
-                map.put(key, value);
-            }
-        }
-        return map;
+    private Map<String, Object> getValues(Config config) {
+        return config.root().unwrapped();
     }
 
     /**
@@ -447,7 +307,7 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         if(isEnabled() && resend) {
             getLogger().log(Level.INFO, "Resending packs for all online players!");
             um = new UserManager(this);
-            for (ProxiedPlayer p : getProxy().getPlayers()) {
+            for (Player p : getProxy().getAllPlayers()) {
                 resendPack(p);
             }
         }
@@ -465,7 +325,7 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         for (PackAssignment assignment : getPackManager().getAssignments()) {
             setConfigFlat("servers." + assignment.getName(), assignment.serialize());
         }
-        getConfig().saveConfig();
+        getConfig().save();
     }
 
     private boolean setConfigFlat(String rootKey, Map<String, Object> map) {
@@ -481,7 +341,7 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
             }
         }
         if (isEmpty) {
-            getConfig().set(rootKey, null);
+            getConfig().remove(rootKey);
         }
         return isEmpty;
     }
@@ -489,8 +349,8 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
     @Override
     public void setStoredPack(UUID playerId, String packName) {
         if (storedPacks != null) {
-            storedPacks.set("players." + playerId, packName);
-            storedPacks.saveConfig();
+            storedPacks.getRawConfig().root().put("players." + playerId, ConfigValueFactory.fromAnyRef(packName));
+            storedPacks.save();
         }
     }
 
@@ -499,8 +359,8 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         return storedPacks != null ? storedPacks.getString("players." + playerId.toString()) : null;
     }
 
-    public Configuration getStoredPacks() {
-        return storedPacks.getSection("players");
+    public Config getStoredPacks() {
+        return storedPacks.getRawConfig().getConfig("players");
     }
 
     @Override
@@ -513,11 +373,11 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
         return getConfig().getInt("permanent-pack-remove-time");
     }
     
-    public static BungeeResourcepacks getInstance() {
+    public static VelocityResourcepacks getInstance() {
         return instance;
     }
     
-    public FileConfiguration getConfig() {
+    public PluginConfig getConfig() {
         return config;
     }
 
@@ -541,41 +401,29 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
      * Resends the pack that corresponds to the player's server
      * @param player The player to set the pack for
      */
-    public void resendPack(ProxiedPlayer player) {
+    public void resendPack(Player player) {
         String serverName = "";
-        if(player.getServer() != null) {
-            serverName = player.getServer().getInfo().getName();
+        if(player.getCurrentServer().isPresent()) {
+            serverName = player.getCurrentServer().get().getServerInfo().getName();
         }
         getPackManager().applyPack(player.getUniqueId(), serverName);
     }
 
     public void resendPack(UUID playerId) {
-        ProxiedPlayer player = getProxy().getPlayer(playerId);
-        if(player != null) {
-            resendPack(player);
-        }
+        getProxy().getPlayer(playerId).ifPresent(this::resendPack);
     }
     
     /**
      * Send a resourcepack to a connected player
-     * @param player The ProxiedPlayer to send the pack to
+     * @param player The Player to send the pack to
      * @param pack The resourcepack to send the pack to
      */
-    protected void sendPack(ProxiedPlayer player, ResourcePack pack) {
-        int clientVersion = player.getPendingConnection().getVersion();
-        if(clientVersion >= ProtocolConstants.MINECRAFT_1_8) {
-            try {
-                ResourcePackSendPacket packet = new ResourcePackSendPacket(pack.getUrl(), pack.getHash());
-                player.unsafe().sendPacket(packet);
-                sendPackInfo(player, pack);
-                logDebug("Send pack " + pack.getName() + " (" + pack.getUrl() + ") to " + player.getName());
-            } catch(BadPacketException e) {
-                getLogger().log(Level.SEVERE, e.getMessage() + " Please check for updates!");
-            } catch(ClassCastException e) {
-                getLogger().log(Level.SEVERE, "Packet defined was not ResourcePackSendPacket? Please check for updates!");
-            }
+    protected void sendPack(Player player, ResourcePack pack) {
+        ProtocolVersion clientVersion = player.getProtocolVersion();
+        if (clientVersion.getProtocol() >= ProtocolVersion.MINECRAFT_1_8.getProtocol()) {
+            player.sendResourcePack(pack.getUrl(), pack.getRawHash());
         } else {
-            getLogger().log(Level.WARNING, "Cannot send the pack " + pack.getName() + " (" + pack.getUrl() + ") to " + player.getName() + " as he uses the unsupported protocol version " + clientVersion + "!");
+            getLogger().log(Level.WARNING, "Cannot send the pack " + pack.getName() + " (" + pack.getUrl() + ") to " + player.getUsername() + " as he uses the unsupported protocol version " + clientVersion + "!");
             getLogger().log(Level.WARNING, "Consider blocking access to your server for clients with version under 1.8 if you want this plugin to work for everyone!");
         }
     }
@@ -591,22 +439,22 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
       * @param player The player to update the pack on the player's bukkit server
       * @param pack The ResourcePack to send the info of the the Bukkit server, null if you want to clear it!
       */
-    public void sendPackInfo(ProxiedPlayer player, ResourcePack pack) {
-        if (player.getServer() == null) {
+    public void sendPackInfo(Player player, ResourcePack pack) {
+        if (!player.getCurrentServer().isPresent()) {
             return;
         }
         ByteArrayDataOutput out = ByteStreams.newDataOutput();
         if(pack != null) {
             out.writeUTF("packChange");
-            out.writeUTF(player.getName());
+            out.writeUTF(player.getUsername());
             out.writeUTF(pack.getName());
             out.writeUTF(pack.getUrl());
             out.writeUTF(pack.getHash());
         } else {
             out.writeUTF("clearPack");
-            out.writeUTF(player.getName());
+            out.writeUTF(player.getUsername());
         }
-        player.getServer().sendData("rp:plugin", out.toByteArray());
+        player.getCurrentServer().get().sendPluginMessage(PLUGIN_MESSAGE_CHANNEL, out.toByteArray());
     }
 
     public void setPack(UUID playerId, ResourcePack pack) {
@@ -614,23 +462,17 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
     }
 
     public void sendPack(UUID playerId, ResourcePack pack) {
-        ProxiedPlayer player = getProxy().getPlayer(playerId);
-        if(player != null) {
-            sendPack(player, pack);
-        }
+        getProxy().getPlayer(playerId).ifPresent(p -> sendPack(p, pack));
     }
 
-    public void clearPack(ProxiedPlayer player) {
+    public void clearPack(Player player) {
         getUserManager().clearUserPack(player.getUniqueId());
         sendPackInfo(player, null);
     }
 
     public void clearPack(UUID playerId) {
         getUserManager().clearUserPack(playerId);
-        ProxiedPlayer player = getProxy().getPlayer(playerId);
-        if (player != null) {
-            sendPackInfo(player, null);
-        }
+        getProxy().getPlayer(playerId).ifPresent(p -> sendPackInfo(p, null));
     }
 
     public PackManager getPackManager() {
@@ -668,7 +510,7 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
 
     @Override
     public String getMessage(ResourcepacksPlayer sender, String key, String... replacements) {
-        return TextComponent.toLegacyText(getComponents(sender, key, replacements));
+        return LegacyComponentSerializer.legacySection().serialize(getComponents(sender, key, replacements));
     }
 
     /**
@@ -678,28 +520,28 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
      * @param replacements Optional placeholder replacement array
      * @return The components or an error message if not available, never null
      */
-    public BaseComponent[] getComponents(ResourcepacksPlayer sender, String key, String... replacements) {
+    public Component getComponents(ResourcepacksPlayer sender, String key, String... replacements) {
         if (lm != null) {
-            ProxiedPlayer player = null;
+            Player player = null;
             if (sender != null) {
-                player = getProxy().getPlayer(sender.getUniqueId());
+                player = getProxy().getPlayer(sender.getUniqueId()).orElse(null);
             }
             LanguageConfig config = lm.getConfig(player);
             if (config != null) {
                 return MineDown.parse(config.get(key), replacements);
             } else {
-                return TextComponent.fromLegacyText("Missing language config! (default language: " + lm.getDefaultLocale() + ", key: " + key + ")");
+                return TextComponent.of("Missing language config! (default language: " + lm.getDefaultLocale() + ", key: " + key + ")");
             }
         }
-        return TextComponent.fromLegacyText(key);
+        return TextComponent.of(key);
     }
 
     @Override
     public boolean hasMessage(ResourcepacksPlayer sender, String key) {
         if (lm != null) {
-            ProxiedPlayer player = null;
+            Player player = null;
             if (sender != null) {
-                player = getProxy().getPlayer(sender.getUniqueId());
+                player = getProxy().getPlayer(sender.getUniqueId()).orElse(null);
             }
             return lm.getConfig(player).contains(key, true);
         }
@@ -708,12 +550,26 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
 
     @Override
     public String getName() {
-        return getDescription().getName();
+        return getClass().getAnnotation(Plugin.class).name();
     }
 
     @Override
     public String getVersion() {
-        return getDescription().getVersion();
+        return getClass().getAnnotation(Plugin.class).version();
+    }
+
+    public ProxyServer getProxy() {
+        return proxy;
+    }
+
+    @Override
+    public Logger getLogger() {
+        return logger;
+    }
+
+    @Override
+    public File getDataFolder() {
+        return null;
     }
 
     @Override
@@ -733,20 +589,16 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
 
     @Override
     public ResourcepacksPlayer getPlayer(UUID playerId) {
-        ProxiedPlayer player = getProxy().getPlayer(playerId);
-        if(player != null) {
-            return new ResourcepacksPlayer(player.getName(), player.getUniqueId());
-        }
-        return null;
+        return getProxy().getPlayer(playerId)
+                .map(player1 -> new ResourcepacksPlayer(player1.getUsername(), player1.getUniqueId()))
+                .orElse(null);
     }
 
     @Override
     public ResourcepacksPlayer getPlayer(String playerName) {
-        ProxiedPlayer player = getProxy().getPlayer(playerName);
-        if(player != null) {
-            return new ResourcepacksPlayer(player.getName(), player.getUniqueId());
-        }
-        return null;
+        return getProxy().getPlayer(playerName)
+                .map(player1 -> new ResourcepacksPlayer(player1.getUsername(), player1.getUniqueId()))
+                .orElse(null);
     }
 
     @Override
@@ -756,25 +608,25 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
 
     @Override
     public boolean sendMessage(ResourcepacksPlayer player, Level level, String key, String... replacements) {
-        BaseComponent[] message = getComponents(player, key, replacements);
-        if (message.length == 0) {
+        Component message = getComponents(player, key, replacements);
+        if (PlainComponentSerializer.plain().serialize(message).length() == 0) {
             return false;
         }
-        if(player != null) {
-            ProxiedPlayer proxyPlayer = getProxy().getPlayer(player.getUniqueId());
-            if(proxyPlayer != null) {
-                proxyPlayer.sendMessage(message);
+        if (player != null) {
+            Optional<Player> proxyPlayer = getProxy().getPlayer(player.getUniqueId());
+            if (proxyPlayer.isPresent()) {
+                proxyPlayer.get().sendMessage(message);
                 return true;
             }
         } else {
-            log(level, TextComponent.toLegacyText(message));
+            log(level, PlainComponentSerializer.plain().serialize(message));
         }
         return false;
     }
 
     @Override
     public void log(Level level, String message) {
-        getLogger().log(level, ChatColor.stripColor(ChatColor.translateAlternateColorCodes('&', message)));
+        getLogger().log(level, message);
     }
 
     @Override
@@ -788,11 +640,7 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
 
     @Override
     public boolean checkPermission(UUID playerId, String perm) {
-        ProxiedPlayer proxiedPlayer = getProxy().getPlayer(playerId);
-        if(proxiedPlayer != null) {
-            return proxiedPlayer.hasPermission(perm);
-        }
-        return perm == null;
+        return getProxy().getPlayer(playerId).map(p -> p.hasPermission(perm)).orElseGet(() -> perm == null);
 
     }
 
@@ -802,40 +650,37 @@ public class BungeeResourcepacks extends Plugin implements ResourcepacksPlugin {
             return viaApi.getPlayerVersion(playerId);
         }
 
-        ProxiedPlayer proxiedPlayer = getProxy().getPlayer(playerId);
-        if (proxiedPlayer != null) {
-            return proxiedPlayer.getPendingConnection().getVersion();
-        }
-        return -1;
+        return getProxy().getPlayer(playerId).map(p -> p.getProtocolVersion().getProtocol()).orElse(-1);
     }
 
     @Override
     public IResourcePackSelectEvent callPackSelectEvent(UUID playerId, ResourcePack pack, IResourcePackSelectEvent.Status status) {
         ResourcePackSelectEvent selectEvent = new ResourcePackSelectEvent(playerId, pack, status);
-        getProxy().getPluginManager().callEvent(selectEvent);
+        getProxy().getEventManager().fire(selectEvent);
         return selectEvent;
     }
 
     @Override
     public IResourcePackSendEvent callPackSendEvent(UUID playerId, ResourcePack pack) {
         ResourcePackSendEvent sendEvent = new ResourcePackSendEvent(playerId, pack);
-        getProxy().getPluginManager().callEvent(sendEvent);
+        getProxy().getEventManager().fire(sendEvent);
         return sendEvent;
     }
 
     @Override
     public boolean isAuthenticated(UUID playerId) {
-        return !getConfig().getBoolean("useauth", false) || authenticatedPlayers.contains(playerId);
+        return !getConfig().getBoolean("useauth") || authenticatedPlayers.contains(playerId);
     }
 
     @Override
     public int runTask(Runnable runnable) {
-        return getProxy().getScheduler().schedule(this, runnable, 0, TimeUnit.MICROSECONDS).getId();
+        getProxy().getScheduler().buildTask(this, runnable);
+        return 0;
     }
 
     @Override
     public int runAsyncTask(Runnable runnable) {
-        return getProxy().getScheduler().runAsync(this, runnable).getId();
+        return runTask(runnable);
     }
 
     public void setAuthenticated(UUID playerId, boolean b) {
