@@ -21,14 +21,13 @@ package de.themoep.resourcepacksplugin.velocity;
 import com.google.common.io.ByteArrayDataOutput;
 import com.google.common.io.ByteStreams;
 import com.google.inject.Inject;
-import com.typesafe.config.Config;
-import com.typesafe.config.ConfigValue;
-import com.typesafe.config.ConfigValueFactory;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.network.ProtocolVersion;
+import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.PluginContainer;
+import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
@@ -58,12 +57,15 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainComponentSerializer;
-import us.myles.ViaVersion.api.ViaAPI;
+import ninja.leaping.configurate.ConfigurationNode;
 import us.myles.ViaVersion.api.platform.ViaPlatform;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
@@ -73,12 +75,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-@Plugin(id = "velocityresourcepacks", name = "VelocityResourcepacks", version = "'${minecraft.plugin.version}'", authors = {"Phoenix616"})
+@Plugin(id = "velocityresourcepacks",
+        name = "VelocityResourcepacks",
+        version = "${minecraft.plugin.version}",
+        authors = {"Phoenix616"},
+        dependencies = {@Dependency(id = "viaversion", optional = true)}
+        )
 public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
 
     private static VelocityResourcepacks instance;
     private final ProxyServer proxy;
     private final Logger logger;
+    private final File dataFolder;
 
     private static final ChannelIdentifier PLUGIN_MESSAGE_CHANNEL = MinecraftChannelIdentifier.create("rp", "plugin");
 
@@ -114,13 +122,14 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
 
     private int bungeeVersion;
 
-    private ViaAPI viaApi;
+    private Optional<PluginContainer> viaPlugin;
 
     @Inject
-    public VelocityResourcepacks(ProxyServer proxy, Logger logger) {
+    public VelocityResourcepacks(ProxyServer proxy, Logger logger, @DataDirectory Path dataFolder) {
         instance = this;
         this.proxy = proxy;
         this.logger = logger;
+        this.dataFolder = dataFolder.toFile();
     }
 
     @Subscribe
@@ -137,10 +146,9 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
         registerCommand(new UsePackCommandExecutor(this));
         registerCommand(new ResetPackCommandExecutor(this));
 
-        Optional<PluginContainer> viaPlugin = getProxy().getPluginManager().getPlugin("ViaVersion");
+        viaPlugin = getProxy().getPluginManager().getPlugin("ViaVersion");
         if (viaPlugin.isPresent()) {
-            viaApi = ((ViaPlatform) viaPlugin.get()).getApi();
-            getLogger().log(Level.INFO, "Detected ViaVersion " + viaApi.getVersion());
+            getLogger().log(Level.INFO, "Detected ViaVersion " + ((ViaPlatform) viaPlugin.get()).getApi().getVersion());
         }
 
         if (isEnabled() && getConfig().getBoolean("autogeneratehashes", true)) {
@@ -171,12 +179,20 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
     }
 
     public boolean loadConfig() {
-        config = new PluginConfig(this, new File(getDataFolder(), "config.conf"), "velocity-config.conf");
+        config = new PluginConfig(this, new File(getDataFolder(), "config.yml"), "velocity-config.yml");
+
+        try {
+            config.createDefaultConfig();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
+
         if (!config.load()) {
             return false;
         }
 
-        storedPacks = new PluginConfig(this, new File(getDataFolder(), "players.conf"));
+        storedPacks = new PluginConfig(this, new File(getDataFolder(), "players.conf"), null);
         if (!storedPacks.load()) {
             getLogger().log(Level.SEVERE, "Unable to load players.yml! Stored player packs will not apply!");
         }
@@ -204,11 +220,11 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
         getPackManager().init();
         if (getConfig().isSection("packs")) {
             getLogger().log(Level.INFO, "Loading packs:");
-            Config packs = getConfig().getRawConfig("packs");
-            for (Map.Entry<String, ConfigValue> s : packs.entrySet()) {
-                Config packSection = packs.getConfig(s.getKey());
+            ConfigurationNode packs = getConfig().getRawConfig("packs");
+            for (Map.Entry<Object, ? extends ConfigurationNode> s : packs.getChildrenMap().entrySet()) {
+                ConfigurationNode packSection = s.getValue();
                 try {
-                    ResourcePack pack = getPackManager().loadPack(s.getKey(), getConfigMap(packSection));
+                    ResourcePack pack = getPackManager().loadPack((String) s.getKey(), getConfigMap(packSection));
                     getLogger().log(Level.INFO, pack.getName() + " - " + (pack.getVariants().isEmpty() ? (pack.getUrl() + " - " + pack.getHash()) : pack.getVariants().size() + " variants"));
 
                     ResourcePack previous = getPackManager().addPack(pack);
@@ -225,7 +241,7 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
         }
 
         if (getConfig().isSection("empty")) {
-            Config packSection = getConfig().getRawConfig("empty");
+            ConfigurationNode packSection = getConfig().getRawConfig("empty");
             try {
                 ResourcePack pack = getPackManager().loadPack(PackManager.EMPTY_IDENTIFIER, getConfigMap(packSection));
                 getLogger().log(Level.INFO, "Empty pack - " + (pack.getVariants().isEmpty() ? (pack.getUrl() + " - " + pack.getHash()) : pack.getVariants().size() + " variants"));
@@ -252,7 +268,7 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
 
         if (getConfig().isSection("global")) {
             getLogger().log(Level.INFO, "Loading global assignment...");
-            Config globalSection = getConfig().getRawConfig("global");
+            ConfigurationNode globalSection = getConfig().getRawConfig("global");
             PackAssignment globalAssignment = getPackManager().loadAssignment("global", getValues(globalSection));
             getPackManager().setGlobalAssignment(globalAssignment);
             logDebug("Loaded " + globalAssignment.toString());
@@ -262,12 +278,12 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
 
         if (getConfig().isSection("servers")) {
             getLogger().log(Level.INFO, "Loading server assignments...");
-            Config servers = getConfig().getRawConfig("servers");
-            for (Map.Entry<String, ConfigValue> server : servers.entrySet()) {
-                Config serverSection = servers.getConfig(server.getKey());
-                if (!serverSection.entrySet().isEmpty()) {
+            ConfigurationNode servers = getConfig().getRawConfig("servers");
+            for (Map.Entry<Object, ? extends ConfigurationNode> server : servers.getChildrenMap().entrySet()) {
+                ConfigurationNode serverSection = server.getValue();
+                if (!serverSection.hasMapChildren()) {
                     getLogger().log(Level.INFO, "Loading assignment for server " + server + "...");
-                    PackAssignment serverAssignment = getPackManager().loadAssignment(server.getKey(), getValues(serverSection));
+                    PackAssignment serverAssignment = getPackManager().loadAssignment((String) server.getKey(), getValues(serverSection));
                     getPackManager().addAssignment(serverAssignment);
                     logDebug("Loaded server assignment " + serverAssignment.toString());
                 } else {
@@ -287,14 +303,22 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
     public Map<String, Object> getConfigMap(Object configuration) {
         if (configuration instanceof Map) {
             return (Map<String, Object>) configuration;
-        } else if (configuration instanceof Config) {
-            return getValues((Config) configuration);
+        } else if (configuration instanceof ConfigurationNode) {
+            return getValues((ConfigurationNode) configuration);
         }
         return null;
     }
 
-    private Map<String, Object> getValues(Config config) {
-        return config.root().unwrapped();
+    private Map<String, Object> getValues(ConfigurationNode config) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (Map.Entry<Object, ? extends ConfigurationNode> entry : config.getChildrenMap().entrySet()) {
+            if (entry.getKey() instanceof String) {
+                map.put((String) entry.getKey(), entry.getValue().getValue());
+            } else {
+                map.put(String.valueOf(entry.getKey()), entry.getValue().getValue());
+            }
+        }
+        return map;
     }
 
     /**
@@ -349,7 +373,7 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
     @Override
     public void setStoredPack(UUID playerId, String packName) {
         if (storedPacks != null) {
-            storedPacks.getRawConfig().root().put("players." + playerId, ConfigValueFactory.fromAnyRef(packName));
+            storedPacks.set("players." + playerId, packName);
             storedPacks.save();
         }
     }
@@ -359,8 +383,8 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
         return storedPacks != null ? storedPacks.getString("players." + playerId.toString()) : null;
     }
 
-    public Config getStoredPacks() {
-        return storedPacks.getRawConfig().getConfig("players");
+    public ConfigurationNode getStoredPacks() {
+        return storedPacks.getRawConfig("players");
     }
 
     @Override
@@ -569,7 +593,7 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
 
     @Override
     public File getDataFolder() {
-        return null;
+        return dataFolder;
     }
 
     @Override
@@ -646,8 +670,8 @@ public class VelocityResourcepacks implements ResourcepacksPlugin, Languaged {
 
     @Override
     public int getPlayerProtocol(UUID playerId) {
-        if (viaApi != null) {
-            return viaApi.getPlayerVersion(playerId);
+        if (viaPlugin.isPresent()) {
+            return ((ViaPlatform) viaPlugin.get()).getApi().getPlayerVersion(playerId);
         }
 
         return getProxy().getPlayer(playerId).map(p -> p.getProtocolVersion().getProtocol()).orElse(-1);

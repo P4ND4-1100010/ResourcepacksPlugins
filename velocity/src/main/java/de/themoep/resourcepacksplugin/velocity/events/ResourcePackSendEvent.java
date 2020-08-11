@@ -32,7 +32,7 @@ public class ResourcePackSendEvent implements IResourcePackSendEvent, ResultedEv
 
     private final UUID playerId;
     private ResourcePack pack;
-    private GenericResult result;
+    private GenericResult result = GenericResult.allowed();
 
     public ResourcePackSendEvent(UUID playerId, ResourcePack pack) {
         this.playerId = playerId;
@@ -52,7 +52,7 @@ public class ResourcePackSendEvent implements IResourcePackSendEvent, ResultedEv
     }
 
     public boolean isCancelled() {
-        return result.isAllowed();
+        return !result.isAllowed();
     }
 
     public void setCancelled(boolean cancelled) {

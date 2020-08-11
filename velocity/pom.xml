@@ -68,9 +68,12 @@
             <resource>
                 <filtering>true</filtering>
                 <includes>
-                    <include>**/VelocityResourcepacks.class</include>
+                    <include>VelocityResourcepacks.class</include>
                 </includes>
-                <directory>${project.basedir}/src/main/java</directory>
+                <directory>${project.basedir}/src/main/java/de/themoep/resourcepacksplugin/velocity</directory>
+            </resource>
+            <resource>
+                <directory>${project.basedir}/src/main/resources/</directory>
             </resource>
             <resource>
                 <directory>${project.basedir}/../</directory>
@@ -92,8 +95,8 @@
                             <shadedPattern>de.themoep.resourcepacksplugin.velocity.libs.lang</shadedPattern>
                         </relocation>
                         <relocation>
-                            <pattern>com.typesafe.config</pattern>
-                            <shadedPattern>de.themoep.resourcepacksplugin.velocity.libs.config</shadedPattern>
+                            <pattern>de.themoep.minedown</pattern>
+                            <shadedPattern>de.themoep.resourcepacksplugin.velocity.libs.minedown</shadedPattern>
                         </relocation>
                     </relocations>
                 </configuration>

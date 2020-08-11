@@ -17,24 +17,31 @@ package de.themoep.resourcepacksplugin.velocity;
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import ninja.leaping.configurate.ConfigurationNode;
+import ninja.leaping.configurate.ValueType;
+import ninja.leaping.configurate.yaml.YAMLConfigurationLoader;
 
-import com.typesafe.config.Config;
-import com.typesafe.config.ConfigException;
-import com.typesafe.config.ConfigFactory;
-import com.typesafe.config.ConfigValue;
-import com.typesafe.config.ConfigValueFactory;
-import com.typesafe.config.ConfigValueType;
-
+import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 public class PluginConfig {
+
+    private static final Pattern PATH_PATTERN = Pattern.compile("\\.");
+
     private final VelocityResourcepacks plugin;
     private final File configFile;
     private final String defaultFile;
-    private Config config;
+    private final YAMLConfigurationLoader configLoader;
+    private ConfigurationNode config;
+    private ConfigurationNode defaultConfig;
 
     public PluginConfig(VelocityResourcepacks plugin, File configFile) {
         this(plugin, configFile, configFile.getName());
@@ -44,57 +51,84 @@ public class PluginConfig {
         this.plugin = plugin;
         this.configFile = configFile;
         this.defaultFile = defaultFile;
+        configLoader = YAMLConfigurationLoader.builder().setIndent(2).setPath(configFile.toPath()).build();
     }
 
     public boolean load() {
         try {
-            config = ConfigFactory.parseFile(configFile);
+            config = configLoader.load();
             if (defaultFile != null) {
-                config = config.withFallback(ConfigFactory.load(defaultFile));;
+                defaultConfig = config = YAMLConfigurationLoader.builder()
+                        .setIndent(2)
+                        .setSource(() -> new BufferedReader(new InputStreamReader(plugin.getResourceAsStream(defaultFile))))
+                        .build().load();
             }
             plugin.getLogger().log(Level.INFO, "Loaded " + configFile.getName());
             return true;
-        } catch (ConfigException e) {
+        } catch (IOException e) {
             plugin.getLogger().log(Level.SEVERE, "Unable to load configuration file " + configFile.getName(), e);
             return false;
         }
     }
 
+    public boolean createDefaultConfig() throws IOException {
+        try (InputStream in = plugin.getResourceAsStream(defaultFile)) {
+            if (in == null) {
+                plugin.getLogger().log(Level.WARNING, "No default config '" + defaultFile + "' found in " + plugin.getName() + "!");
+                return false;
+            }
+            if (!configFile.exists()) {
+                File parent = configFile.getParentFile();
+                if (!parent.exists()) {
+                    parent.mkdirs();
+                }
+                try {
+                    Files.copy(in, configFile.toPath());
+                    return true;
+                } catch (IOException ex) {
+                    plugin.getLogger().log(Level.SEVERE, "Could not save " + configFile.getName() + " to " + configFile, ex);
+                }
+            }
+        } catch (IOException ex) {
+            plugin.getLogger().log(Level.SEVERE, "Could not load default config from " + defaultFile, ex);
+        }
+        return false;
+    }
+
     public void save() {
-        try (FileWriter writer = new FileWriter(configFile)) {
-            writer.write(config.root().render());
+        try {
+            configLoader.save(config);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
     public Object set(String path, Object value) {
-        ConfigValue prev = config.root().put(path, ConfigValueFactory.fromAnyRef(value));
-        return prev != null ? prev.unwrapped() : null;
+        ConfigurationNode node = config.getNode(splitPath(path));
+        Object prev = node.getValue();
+        node.setValue(value);
+        return prev;
     }
 
-    public ConfigValue remove(String path) {
-        return config.root().remove(path);
+    public ConfigurationNode remove(String path) {
+        ConfigurationNode node = config.getNode(splitPath(path));
+        return node.isVirtual() ? node : node.setValue(null);
     }
 
-    public Config getRawConfig() {
+    public ConfigurationNode getRawConfig() {
         return config;
     }
 
-    public Config getRawConfig(String path) {
-        return config.getConfig(path);
+    public ConfigurationNode getRawConfig(String path) {
+        return getRawConfig().getNode(splitPath(path));
     }
 
     public boolean has(String path) {
-        return config.hasPath(path);
+        return !getRawConfig(path).isVirtual();
     }
 
     public boolean isSection(String path) {
-        try {
-            return config.getValue(path).valueType() == ConfigValueType.OBJECT;
-        } catch (ConfigException e) {
-            return false;
-        }
+        return getRawConfig(path).hasMapChildren();
     }
     
     public int getInt(String path) {
@@ -102,11 +136,7 @@ public class PluginConfig {
     }
 
     public int getInt(String path, int def) {
-        try {
-            return config.getInt(path);
-        } catch (ConfigException e) {
-            return def;
-        }
+        return getRawConfig(path).getInt(def);
     }
     
     public double getDouble(String path) {
@@ -114,11 +144,7 @@ public class PluginConfig {
     }
 
     public double getDouble(String path, double def) {
-        try {
-            return config.getDouble(path);
-        } catch (ConfigException e) {
-            return def;
-        }
+        return getRawConfig(path).getDouble(def);
     }
     
     public String getString(String path) {
@@ -126,11 +152,7 @@ public class PluginConfig {
     }
 
     public String getString(String path, String def) {
-        try {
-            return config.getString(path);
-        } catch (ConfigException e) {
-            return def;
-        }
+        return getRawConfig(path).getString(def);
     }
     
     public boolean getBoolean(String path) {
@@ -138,10 +160,10 @@ public class PluginConfig {
     }
 
     public boolean getBoolean(String path, boolean def) {
-        try {
-            return config.getBoolean(path);
-        } catch (ConfigException e) {
-            return def;
-        }
+        return getRawConfig(path).getBoolean(def);
+    }
+
+    private static Object[] splitPath(String key) {
+        return PATH_PATTERN.split(key);
     }
 }
